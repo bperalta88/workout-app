@@ -5,8 +5,9 @@ struct WorkoutSessionView: View {
     @Bindable var day: WorkoutDay
     @Environment(\.modelContext) private var modelContext
 
-    @State private var prToastExerciseName: String?
     @State private var prHighlightSetIDs: Set<PersistentIdentifier> = []
+    @State private var prCelebration: PRCelebrationState?
+    @State private var isPRModalPresented = false
 
     var body: some View {
         ScrollView {
@@ -24,27 +25,39 @@ struct WorkoutSessionView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
         }
-        .background(Color(.systemGroupedBackground))
+        .background(AppTheme.background)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 2) {
                     Text("Day \(day.dayIndex)")
-                        .font(.headline)
+                        .font(.system(.headline, design: .rounded, weight: .bold))
                     Text(day.focus)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(.caption, design: .rounded, weight: .medium))
+                        .foregroundStyle(AppTheme.bodyText)
                 }
             }
         }
-        .overlay(alignment: .top) {
-            if let name = prToastExerciseName {
-                PRBanner(exerciseName: name)
-                    .padding(.top, 8)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+        .overlay {
+            if isPRModalPresented, let celebration = prCelebration {
+                PRCelebrationOverlay(
+                    exerciseName: celebration.exerciseName,
+                    weight: celebration.weight,
+                    reps: celebration.reps,
+                    previousPR: celebration.previousPR,
+                    onDismiss: {
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) {
+                            isPRModalPresented = false
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                            prCelebration = nil
+                        }
+                    }
+                )
+                .transition(.opacity.combined(with: .scale(scale: 1.03)))
             }
         }
-        .animation(.spring(response: 0.45, dampingFraction: 0.82), value: prToastExerciseName)
+        .animation(.spring(response: 0.42, dampingFraction: 0.88), value: isPRModalPresented)
     }
 
     private func handleSetCompletion(exercise: Exercise, setLog: SetLog, completed: Bool) {
@@ -53,20 +66,33 @@ struct WorkoutSessionView: View {
             return
         }
 
-        let isPR = PREngine.registerCompletionIfPersonalRecord(
+        let result = PREngine.evaluateCompletionForPersonalRecord(
             exerciseName: exercise.name,
             weight: setLog.weight,
             reps: setLog.reps,
             in: modelContext
         )
 
-        if isPR {
+        if result.isNewRecord {
             try? modelContext.save()
             prHighlightSetIDs.insert(setLog.persistentModelID)
-            prToastExerciseName = exercise.name
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
-                if prToastExerciseName == exercise.name {
-                    prToastExerciseName = nil
+            prCelebration = PRCelebrationState(
+                exerciseName: exercise.name,
+                weight: result.currentWeight,
+                reps: result.currentReps,
+                previousPR: result.previousMaxWeight
+            )
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                isPRModalPresented = true
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.8) {
+                if isPRModalPresented {
+                    withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) {
+                        isPRModalPresented = false
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                        prCelebration = nil
+                    }
                 }
             }
         } else {
@@ -83,21 +109,21 @@ private struct ExerciseSessionCard: View {
     var onSetCompletedChange: (SetLog, Bool) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(exercise.name)
-                        .font(.headline)
-                        .foregroundStyle(.primary)
+                        .font(.system(.headline, design: .rounded, weight: .bold))
+                        .foregroundStyle(AppTheme.titleText)
                         .fixedSize(horizontal: false, vertical: true)
 
                     HStack(spacing: 6) {
                         Image(systemName: "target")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .font(.system(.caption, design: .rounded, weight: .bold))
+                            .foregroundStyle(AppTheme.mutedText)
                         Text("Target: \(exercise.targetSetsReps)")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                            .foregroundStyle(AppTheme.bodyText)
                     }
                 }
                 Spacer(minLength: 0)
@@ -111,13 +137,14 @@ private struct ExerciseSessionCard: View {
         }
         .padding(16)
         .background {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(.secondarySystemGroupedBackground))
+            RoundedRectangle(cornerRadius: AppTheme.cardCornerRadius, style: .continuous)
+                .fill(AppTheme.cardBackground)
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+            RoundedRectangle(cornerRadius: AppTheme.cardCornerRadius, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.03), lineWidth: 1)
         }
+        .shadow(color: AppTheme.cardShadow, radius: 12, x: 0, y: 5)
     }
 
     @ViewBuilder
@@ -161,8 +188,8 @@ private struct ExerciseSessionCard: View {
             Text("Done")
                 .frame(width: 44, alignment: .center)
         }
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(.tertiary)
+        .font(.system(.caption, design: .rounded, weight: .bold))
+        .foregroundStyle(AppTheme.mutedText)
         .textCase(.uppercase)
     }
 }
@@ -185,25 +212,29 @@ private struct SetRowView: View {
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
             Text("\(setLog.setIndex)")
-                .font(.subheadline.weight(.semibold))
+                .font(.system(.subheadline, design: .rounded, weight: .bold))
                 .monospacedDigit()
                 .frame(width: 36, alignment: .leading)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(AppTheme.bodyText)
 
             TextField("0", text: $repsText)
                 .keyboardType(.numberPad)
-                .textFieldStyle(.roundedBorder)
                 .focused($focusedField, equals: .reps)
                 .frame(maxWidth: .infinity)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 9)
+                .background(AppTheme.softInput, in: RoundedRectangle(cornerRadius: AppTheme.controlCornerRadius, style: .continuous))
                 .onChange(of: repsText) { _, newValue in
                     setLog.reps = Int(newValue.filter(\.isNumber)) ?? 0
                 }
 
             TextField("0", text: $weightText)
                 .keyboardType(.decimalPad)
-                .textFieldStyle(.roundedBorder)
                 .focused($focusedField, equals: .weight)
                 .frame(maxWidth: .infinity)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 9)
+                .background(AppTheme.softInput, in: RoundedRectangle(cornerRadius: AppTheme.controlCornerRadius, style: .continuous))
                 .onChange(of: weightText) { _, newValue in
                     let filtered = newValue.filter { $0.isNumber || $0 == "." }
                     setLog.weight = Double(filtered) ?? 0
@@ -215,15 +246,22 @@ private struct SetRowView: View {
                 onCompletedChange(next)
             } label: {
                 ZStack {
-                    Image(systemName: setLog.isCompleted ? "checkmark.circle.fill" : "circle")
-                        .font(.title2)
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(setLog.isCompleted ? Color.green : Color.secondary)
+                    Circle()
+                        .stroke(setLog.isCompleted ? AppTheme.primaryBlue : AppTheme.mutedText.opacity(0.55), lineWidth: 2)
+                        .background {
+                            Circle()
+                                .fill(setLog.isCompleted ? AppTheme.primaryBlue : Color.clear)
+                        }
+                    if setLog.isCompleted {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                    }
 
                     if showPRGlow {
                         Image(systemName: "trophy.fill")
                             .font(.caption)
-                            .foregroundStyle(.yellow)
+                            .foregroundStyle(.yellow.opacity(0.95))
                             .offset(x: 14, y: -14)
                             .transition(.scale.combined(with: .opacity))
                     }
@@ -237,12 +275,12 @@ private struct SetRowView: View {
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
         .background {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(showPRGlow ? Color.yellow.opacity(0.12) : Color(.tertiarySystemFill).opacity(0.35))
+            RoundedRectangle(cornerRadius: AppTheme.controlCornerRadius, style: .continuous)
+                .fill(showPRGlow ? Color.yellow.opacity(0.12) : Color.white.opacity(0.78))
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(showPRGlow ? Color.yellow.opacity(0.55) : Color.clear, lineWidth: 1.5)
+            RoundedRectangle(cornerRadius: AppTheme.controlCornerRadius, style: .continuous)
+                .strokeBorder(showPRGlow ? Color.yellow.opacity(0.68) : Color.black.opacity(0.03), lineWidth: 1.2)
         }
         .animation(.easeInOut(duration: 0.25), value: showPRGlow)
         .onAppear { syncFieldsFromModel() }
@@ -272,31 +310,178 @@ private struct SetRowView: View {
     }
 }
 
-// MARK: - PR toast
+// MARK: - PR celebration
 
-private struct PRBanner: View {
+private struct PRCelebrationState {
     var exerciseName: String
+    var weight: Double
+    var reps: Int
+    var previousPR: Double?
+}
+
+private struct PRCelebrationOverlay: View {
+    var exerciseName: String
+    var weight: Double
+    var reps: Int
+    var previousPR: Double?
+    var onDismiss: () -> Void
+
+    @State private var animateIn = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "trophy.fill")
-                .font(.title3)
-                .foregroundStyle(.yellow)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("New PR!")
-                    .font(.subheadline.weight(.bold))
-                Text(exerciseName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        ZStack {
+            Rectangle()
+                .fill(Color(red: 0.02, green: 0.04, blue: 0.09).opacity(0.72))
+                .ignoresSafeArea()
+                .background(.ultraThinMaterial)
+
+            SparkleField()
+                .opacity(animateIn ? 1 : 0)
+                .animation(.easeInOut(duration: 0.55), value: animateIn)
+
+            VStack(spacing: 0) {
+                RoundedRectangle(cornerRadius: 32, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.13, green: 0.94, blue: 0.86),
+                                Color(red: 1.0, green: 0.76, blue: 0.20),
+                                Color(red: 1.0, green: 0.56, blue: 0.17)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(maxWidth: 360, minHeight: 300)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 29, style: .continuous)
+                            .fill(Color(red: 0.06, green: 0.09, blue: 0.16))
+                            .padding(3)
+                            .overlay(content: celebrationContent)
+                    }
+                    .shadow(color: Color(red: 0.06, green: 0.95, blue: 0.84).opacity(0.4), radius: 20)
+                    .shadow(color: Color.orange.opacity(0.38), radius: 24)
             }
-            Spacer(minLength: 0)
+            .padding(.horizontal, 24)
+            .scaleEffect(animateIn ? 1 : 0.78)
+            .opacity(animateIn ? 1 : 0)
+            .animation(.spring(response: 0.46, dampingFraction: 0.75), value: animateIn)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
-        .padding(.horizontal, 20)
+        .onTapGesture {
+            onDismiss()
+        }
+        .onAppear {
+            animateIn = true
+        }
+    }
+
+    @ViewBuilder
+    private func celebrationContent() -> some View {
+        VStack(spacing: 12) {
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [Color.yellow.opacity(0.93), Color.orange.opacity(0.78), Color.clear],
+                        center: .center,
+                        startRadius: 8,
+                        endRadius: 52
+                    )
+                )
+                .frame(width: 92, height: 92)
+                .overlay {
+                    Image(systemName: "dumbbell.fill")
+                        .font(.system(size: 36, weight: .bold))
+                        .foregroundStyle(.white)
+                        .rotationEffect(.degrees(-16))
+                }
+                .padding(.top, 24)
+
+            Text("NEW PERSONAL RECORD!")
+                .font(.system(size: 24, weight: .black, design: .rounded))
+                .foregroundStyle(Color(red: 1.0, green: 0.86, blue: 0.44))
+                .multilineTextAlignment(.center)
+                .shadow(color: Color.yellow.opacity(0.7), radius: 9)
+                .padding(.horizontal, 20)
+
+            Text("YOU DID IT!")
+                .font(.system(size: 14, weight: .bold, design: .rounded))
+                .foregroundStyle(Color(red: 0.36, green: 0.95, blue: 0.90))
+                .tracking(1.2)
+
+            VStack(spacing: 5) {
+                Text("\(displayWeight(weight)) lb \(exerciseName)")
+                    .font(.system(size: 19, weight: .heavy, design: .rounded))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+
+                Text("at \(reps) reps")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.84))
+
+                Text(previousPRText)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.6))
+            }
+            .padding(.top, 6)
+            .padding(.horizontal, 14)
+
+            Button {
+                onDismiss()
+            } label: {
+                Text("Awesome")
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .foregroundStyle(.black.opacity(0.74))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.white.opacity(0.9))
+                    )
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 24)
+            .padding(.top, 6)
+            .padding(.bottom, 24)
+        }
+    }
+
+    private var previousPRText: String {
+        guard let previousPR, previousPR > 0 else {
+            return "First recorded PR"
+        }
+        return "Prev PR: \(displayWeight(previousPR)) lb"
+    }
+
+    private func displayWeight(_ value: Double) -> String {
+        if value.truncatingRemainder(dividingBy: 1) == 0 {
+            return String(Int(value))
+        }
+        return String(format: "%.1f", value)
+    }
+}
+
+private struct SparkleField: View {
+    @State private var twinkle = false
+
+    var body: some View {
+        ZStack {
+            ForEach(0..<18, id: \.self) { idx in
+                Circle()
+                    .fill(idx.isMultiple(of: 2) ? Color.cyan.opacity(0.55) : Color.yellow.opacity(0.55))
+                    .frame(width: CGFloat(4 + (idx % 4)), height: CGFloat(4 + (idx % 4)))
+                    .position(
+                        x: CGFloat(40 + (idx * 17) % 330),
+                        y: CGFloat(70 + (idx * 29) % 560)
+                    )
+                    .opacity(twinkle ? 1 : 0.18)
+                    .blur(radius: twinkle ? 0 : 2)
+                    .animation(
+                        .easeInOut(duration: 0.8).repeatForever().delay(Double(idx) * 0.03),
+                        value: twinkle
+                    )
+            }
+        }
+        .onAppear { twinkle = true }
     }
 }
 
