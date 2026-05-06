@@ -1,0 +1,47 @@
+# Xcode
+DerivedData/
+*.xcuserstate
+*.xcuserdatad/
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+*.swiftpm/xcode/package.xcworkspace/
+.swiftpm/configuration/registries.json
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Swift Package Manager
+.build/
+Packages/
+
+# CocoaPods (if you add later)
+Pods/
+
+# Carthage (if you add later)
+Carthage/Build/
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+
+# IDEs
+.idea/
+*.swp
+*~
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Env / secrets
+.env
+*.pem
