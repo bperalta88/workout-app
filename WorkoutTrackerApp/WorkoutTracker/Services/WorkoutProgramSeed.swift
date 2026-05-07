@@ -91,11 +91,11 @@ enum WorkoutProgramSeed {
             ),
             Exercise(
                 name: "Cardio",
-                targetSetsReps: "20 min",
+                targetSetsReps: "30 min",
                 kind: .cardio,
                 sortOrder: 5,
                 cardioCompleted: false,
-                cardioDurationNote: "20 Min Incline Walk"
+                cardioDurationNote: "30 Min Incline Walk"
             ),
         ]
         attachParent(day)
@@ -166,11 +166,11 @@ enum WorkoutProgramSeed {
             ),
             Exercise(
                 name: "Cardio",
-                targetSetsReps: "20 min",
+                targetSetsReps: "30 min",
                 kind: .cardio,
                 sortOrder: 5,
                 cardioCompleted: false,
-                cardioDurationNote: "20 Min Incline Walk"
+                cardioDurationNote: "30 Min Incline Walk"
             ),
         ]
         attachParent(day)
@@ -281,11 +281,11 @@ enum WorkoutProgramSeed {
     private static func cardioBlock(sortOrder: Int) -> Exercise {
         Exercise(
             name: "Cardio",
-            targetSetsReps: "20 min",
+            targetSetsReps: "30 min",
             kind: .cardio,
             sortOrder: sortOrder,
             cardioCompleted: false,
-            cardioDurationNote: "20 Min Incline Walk"
+            cardioDurationNote: "30 Min Incline Walk"
         )
     }
 }

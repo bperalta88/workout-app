@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import PhotosUI
+import AVFoundation
 
 struct NutritionTabView: View {
     @Environment(\.modelContext) private var modelContext
@@ -339,6 +340,7 @@ private struct PhotoLineItem: Identifiable {
 private struct AddMealSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Query(sort: \SavedFood.lastUsedAt, order: .reverse) private var savedFoods: [SavedFood]
 
     private enum AddMode: String, CaseIterable {
         case quick = "Quick"
@@ -375,6 +377,9 @@ private struct AddMealSheet: View {
 
     @State private var browseQuery = ""
     @State private var browseSelections: [String: Double] = [:]
+    @State private var showBarcodeScanner = false
+    @State private var scannedBarcode: String?
+    @State private var browseFavoritesOnly = false
 
     var body: some View {
         NavigationStack {
@@ -396,6 +401,10 @@ private struct AddMealSheet: View {
                             }
                         }
                         TextField("Name (optional)", text: $mealName)
+                    }
+
+                    if !favoriteFoods.isEmpty || !recentFoods.isEmpty {
+                        quickPicksSection
                     }
 
                     switch mode {
@@ -434,6 +443,11 @@ private struct AddMealSheet: View {
             .onChange(of: mealPhotoAnalysisKindRaw) { _, _ in
                 guard mode == .photo, let img = photoImage else { return }
                 Task { await runPhotoAnalysis(for: img) }
+            }
+            .sheet(isPresented: $showBarcodeScanner) {
+                BarcodeScannerSheet { code in
+                    handleScannedBarcode(code)
+                }
             }
         }
     }
@@ -610,33 +624,129 @@ private struct AddMealSheet: View {
         }
     }
 
+    private var favoriteFoods: [SavedFood] {
+        savedFoods.filter(\.isFavorite).sorted { $0.name < $1.name }
+    }
+
+    private var recentFoods: [SavedFood] {
+        savedFoods
+            .filter { !$0.isFavorite && $0.useCount > 0 }
+            .sorted { $0.lastUsedAt > $1.lastUsedAt }
+    }
+
+    private var quickPicksSection: some View {
+        Section("Quick picks") {
+            if !favoriteFoods.isEmpty {
+                foodPickRows(title: "Favorites", foods: Array(favoriteFoods.prefix(8)))
+            }
+            if !recentFoods.isEmpty {
+                foodPickRows(title: "Recent", foods: Array(recentFoods.prefix(12)))
+            }
+        }
+    }
+
+    private func foodPickRows(title: String, foods: [SavedFood]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.mutedText)
+            ForEach(foods, id: \.persistentModelID) { food in
+                HStack(spacing: 10) {
+                    Button {
+                        applySavedFood(food)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(food.name)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AppTheme.titleText)
+                                .lineLimit(1)
+                            Text("\(Int(food.calories)) kcal • P \(Int(food.proteinG)) • C \(Int(food.carbsG)) • F \(Int(food.fatG))")
+                                .font(.caption2)
+                                .foregroundStyle(AppTheme.mutedText)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        food.isFavorite.toggle()
+                        try? modelContext.save()
+                    } label: {
+                        Image(systemName: food.isFavorite ? "star.fill" : "star")
+                            .foregroundStyle(food.isFavorite ? Color.yellow : AppTheme.mutedText)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
     private var browseSection: some View {
         Section {
-            TextField("Search foods", text: $browseQuery)
-                .textInputAutocapitalization(.never)
+            HStack(spacing: 10) {
+                TextField("Search foods or brands (Quest, Kirkland, Built...)", text: $browseQuery)
+                    .textInputAutocapitalization(.never)
+                Button {
+                    showBarcodeScanner = true
+                } label: {
+                    Image(systemName: "barcode.viewfinder")
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("Scan barcode")
+            }
 
             let filtered = LocalFoodCatalog.entries.filter { entry in
-                browseQuery.isEmpty
+                let matchesQuery = browseQuery.isEmpty
                     || entry.displayName.localizedCaseInsensitiveContains(browseQuery)
                     || entry.matchKeys.contains { $0.localizedCaseInsensitiveContains(browseQuery) }
+                    || (entry.barcode?.contains(browseQuery) ?? false)
+                if browseFavoritesOnly {
+                    return matchesQuery && isFavorite(entry)
+                }
+                return matchesQuery
+            }
+
+            if browseQuery.isEmpty {
+                Text("Popular branded picks")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.mutedText)
+            }
+
+            Toggle("Favorites only", isOn: $browseFavoritesOnly)
+                .font(.subheadline)
+
+            if filtered.isEmpty, let scannedBarcode, !scannedBarcode.isEmpty {
+                Text("No exact local match for barcode \(scannedBarcode). You can still search and log manually, then it will appear in Recent.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.mutedText)
             }
 
             ForEach(filtered) { entry in
                 let grams = bindingServing(for: entry.id, defaultG: 0, dict: $browseSelections)
                 VStack(alignment: .leading, spacing: 6) {
-                    Toggle(isOn: Binding(
-                        get: { grams.wrappedValue > 0 },
-                        set: { on in
-                            grams.wrappedValue = on ? entry.defaultServingG : 0
+                    HStack(spacing: 10) {
+                        Toggle(isOn: Binding(
+                            get: { grams.wrappedValue > 0 },
+                            set: { on in
+                                grams.wrappedValue = on ? entry.defaultServingG : 0
+                            }
+                        )) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.displayName)
+                                    .font(.subheadline.weight(.semibold))
+                                Text("~\(Int(entry.kcalPer100g)) kcal / 100 g")
+                                    .font(.caption2)
+                                    .foregroundStyle(AppTheme.mutedText)
+                            }
                         }
-                    )) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(entry.displayName)
-                                .font(.subheadline.weight(.semibold))
-                            Text("~\(Int(entry.kcalPer100g)) kcal / 100 g")
-                                .font(.caption2)
-                                .foregroundStyle(AppTheme.mutedText)
+                        Button {
+                            toggleFavorite(entry)
+                        } label: {
+                            Image(systemName: isFavorite(entry) ? "star.fill" : "star")
+                                .foregroundStyle(isFavorite(entry) ? Color.yellow : AppTheme.mutedText)
                         }
+                        .buttonStyle(.plain)
                     }
                     if grams.wrappedValue > 0 {
                         HStack {
@@ -661,6 +771,82 @@ private struct AddMealSheet: View {
             get: { dict.wrappedValue[id] ?? 0 },
             set: { dict.wrappedValue[id] = $0 }
         )
+    }
+
+    private func applySavedFood(_ food: SavedFood) {
+        mode = .quick
+        mealName = food.name
+        quickCal = String(Int(food.calories.rounded()))
+        quickP = String(format: "%.1f", food.proteinG)
+        quickC = String(format: "%.1f", food.carbsG)
+        quickF = String(format: "%.1f", food.fatG)
+    }
+
+    private func savedFood(for entry: LocalFoodCatalog.Entry) -> SavedFood? {
+        savedFoods.first { $0.key == entry.displayName.lowercased() }
+    }
+
+    private func isFavorite(_ entry: LocalFoodCatalog.Entry) -> Bool {
+        savedFood(for: entry)?.isFavorite ?? false
+    }
+
+    private func toggleFavorite(_ entry: LocalFoodCatalog.Entry) {
+        let existing = savedFood(for: entry)
+        let m = entry.macros(forServingGrams: entry.defaultServingG)
+        let food = existing ?? SavedFood(
+            key: entry.displayName.lowercased(),
+            name: entry.displayName,
+            calories: m.cal,
+            proteinG: m.p,
+            carbsG: m.c,
+            fatG: m.f,
+            barcode: entry.barcode ?? "",
+            isFavorite: true,
+            useCount: 0,
+            lastUsedAt: .distantPast
+        )
+        if existing == nil {
+            modelContext.insert(food)
+        } else {
+            food.isFavorite.toggle()
+        }
+        try? modelContext.save()
+    }
+
+    private func upsertSavedFood(
+        name: String,
+        calories: Double,
+        protein: Double,
+        carbs: Double,
+        fat: Double,
+        barcode: String = ""
+    ) {
+        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanName.isEmpty else { return }
+        let key = cleanName.lowercased()
+        let existing = savedFoods.first(where: { $0.key == key })
+        let food = existing ?? SavedFood(
+            key: key,
+            name: cleanName,
+            calories: calories,
+            proteinG: protein,
+            carbsG: carbs,
+            fatG: fat,
+            barcode: barcode
+        )
+        food.name = cleanName
+        food.calories = max(0, calories)
+        food.proteinG = max(0, protein)
+        food.carbsG = max(0, carbs)
+        food.fatG = max(0, fat)
+        if !barcode.isEmpty {
+            food.barcode = barcode
+        }
+        food.useCount += 1
+        food.lastUsedAt = .now
+        if existing == nil {
+            modelContext.insert(food)
+        }
     }
 
     private var canSave: Bool {
@@ -807,8 +993,57 @@ private struct AddMealSheet: View {
             visionSummary: visionSummary
         )
         modelContext.insert(log)
+        switch mode {
+        case .quick:
+            upsertSavedFood(
+                name: name,
+                calories: macros.cal,
+                protein: macros.p,
+                carbs: macros.c,
+                fat: macros.f,
+                barcode: scannedBarcode ?? ""
+            )
+        case .browse:
+            for entry in LocalFoodCatalog.entries {
+                let g = browseSelections[entry.id] ?? 0
+                guard g > 0 else { continue }
+                let m = entry.macros(forServingGrams: g)
+                upsertSavedFood(
+                    name: entry.displayName,
+                    calories: m.cal,
+                    protein: m.p,
+                    carbs: m.c,
+                    fat: m.f,
+                    barcode: entry.barcode ?? ""
+                )
+            }
+        case .photo:
+            if !name.isEmpty {
+                upsertSavedFood(
+                    name: name,
+                    calories: macros.cal,
+                    protein: macros.p,
+                    carbs: macros.c,
+                    fat: macros.f,
+                    barcode: ""
+                )
+            }
+        }
         try? modelContext.save()
         dismiss()
+    }
+
+    private func handleScannedBarcode(_ code: String) {
+        let clean = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        scannedBarcode = clean
+        mode = .browse
+        if let exact = LocalFoodCatalog.entry(matchingBarcode: clean) {
+            browseQuery = exact.displayName
+            browseSelections = [exact.id: exact.defaultServingG]
+        } else {
+            browseQuery = clean
+        }
     }
 
     private func loadAndAnalyzePhoto(_ item: PhotosPickerItem?) async {
@@ -995,5 +1230,120 @@ private struct MealDetailSheet: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 10)
         .minimalCard(cornerRadius: 12)
+    }
+}
+
+// MARK: - Barcode scanner
+
+private struct BarcodeScannerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let onScanned: (String) -> Void
+
+    @State private var manualCode = ""
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 14) {
+                BarcodeScannerView { code in
+                    onScanned(code)
+                    dismiss()
+                }
+                .frame(height: 320)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                Text("Point camera at a barcode.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.mutedText)
+
+                HStack(spacing: 8) {
+                    TextField("Manual barcode", text: $manualCode)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.numberPad)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Use") {
+                        guard !manualCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                        onScanned(manualCode)
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(16)
+            .navigationTitle("Scan barcode")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct BarcodeScannerView: UIViewControllerRepresentable {
+    var onScanned: (String) -> Void
+
+    func makeUIViewController(context: Context) -> BarcodeScannerViewController {
+        let vc = BarcodeScannerViewController()
+        vc.onScanned = onScanned
+        return vc
+    }
+
+    func updateUIViewController(_ uiViewController: BarcodeScannerViewController, context: Context) {}
+}
+
+private final class BarcodeScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
+    var onScanned: ((String) -> Void)?
+
+    private let session = AVCaptureSession()
+    private var previewLayer: AVCaptureVideoPreviewLayer?
+    private var didEmitCode = false
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        configureScanner()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        previewLayer?.frame = view.bounds
+    }
+
+    private func configureScanner() {
+        guard let videoDevice = AVCaptureDevice.default(for: .video),
+              let videoInput = try? AVCaptureDeviceInput(device: videoDevice),
+              session.canAddInput(videoInput) else { return }
+        session.addInput(videoInput)
+
+        let output = AVCaptureMetadataOutput()
+        guard session.canAddOutput(output) else { return }
+        session.addOutput(output)
+
+        output.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
+        output.metadataObjectTypes = [
+            .ean8, .ean13, .upce, .code128, .code39, .code93, .pdf417, .qr
+        ]
+
+        let layer = AVCaptureVideoPreviewLayer(session: session)
+        layer.videoGravity = .resizeAspectFill
+        layer.frame = view.bounds
+        view.layer.addSublayer(layer)
+        previewLayer = layer
+
+        session.startRunning()
+    }
+
+    func metadataOutput(
+        _ output: AVCaptureMetadataOutput,
+        didOutput metadataObjects: [AVMetadataObject],
+        from connection: AVCaptureConnection
+    ) {
+        guard !didEmitCode else { return }
+        guard let object = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
+              let code = object.stringValue,
+              !code.isEmpty else { return }
+        didEmitCode = true
+        session.stopRunning()
+        onScanned?(code)
     }
 }

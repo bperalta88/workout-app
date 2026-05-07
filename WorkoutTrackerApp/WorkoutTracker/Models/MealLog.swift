@@ -72,3 +72,41 @@ final class MealLog {
 
     var resolvedSlot: MealSlot { MealSlot(rawValue: slotRaw) ?? .snack }
 }
+
+@Model
+final class SavedFood {
+    @Attribute(.unique) var key: String
+    var name: String
+    var calories: Double
+    var proteinG: Double
+    var carbsG: Double
+    var fatG: Double
+    var barcode: String
+    var isFavorite: Bool
+    var useCount: Int
+    var lastUsedAt: Date
+
+    init(
+        key: String,
+        name: String,
+        calories: Double,
+        proteinG: Double,
+        carbsG: Double,
+        fatG: Double,
+        barcode: String = "",
+        isFavorite: Bool = false,
+        useCount: Int = 0,
+        lastUsedAt: Date = .distantPast
+    ) {
+        self.key = key
+        self.name = name
+        self.calories = calories
+        self.proteinG = proteinG
+        self.carbsG = carbsG
+        self.fatG = fatG
+        self.barcode = barcode
+        self.isFavorite = isFavorite
+        self.useCount = useCount
+        self.lastUsedAt = lastUsedAt
+    }
+}

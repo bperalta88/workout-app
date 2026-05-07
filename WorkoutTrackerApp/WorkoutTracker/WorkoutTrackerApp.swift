@@ -11,13 +11,20 @@ struct WorkoutTrackerApp: App {
             WorkoutDay.self,
             Exercise.self,
             SetLog.self,
+            CompletedWorkoutSession.self,
+            CompletedExerciseSnapshot.self,
+            CompletedSetSnapshot.self,
             PersonalRecord.self,
+            PlayerStats.self,
+            DailyQuestClaim.self,
             MealLog.self,
+            SavedFood.self,
         ])
         modelContainer = Self.makeContainer(schema: schema)
 
         let context = ModelContext(modelContainer)
         WorkoutProgramSeed.insertDefaultProgramIfNeeded(in: context)
+        PlayerStats.ensureExists(in: context)
         try? context.save()
     }
 

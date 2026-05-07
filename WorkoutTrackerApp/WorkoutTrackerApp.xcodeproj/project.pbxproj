@@ -10,6 +10,7 @@
 		201097582FAADAD5006BB1C0 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 201097552FAADAD5006BB1C0 /* ContentView.swift */; };
 		201097592FAADAD5006BB1C0 /* PREngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 201097502FAADAD5006BB1C0 /* PREngine.swift */; };
 		2010975A2FAADAD5006BB1C0 /* PersonalRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2010974B2FAADAD5006BB1C0 /* PersonalRecord.swift */; };
+		201098202FAADAD5006BB1C0 /* PlayerStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2010981F2FAADAD5006BB1C0 /* PlayerStats.swift */; };
 		2010975B2FAADAD5006BB1C0 /* WorkoutDay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2010974D2FAADAD5006BB1C0 /* WorkoutDay.swift */; };
 		2010975C2FAADAD5006BB1C0 /* ExerciseKind.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2010974A2FAADAD5006BB1C0 /* ExerciseKind.swift */; };
 		2010975D2FAADAD5006BB1C0 /* SetLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2010974C2FAADAD5006BB1C0 /* SetLog.swift */; };
@@ -31,6 +32,9 @@
 		201098162FAADAD5006BB1C0 /* MacroDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 201098152FAADAD5006BB1C0 /* MacroDashboardView.swift */; };
 		201098182FAADAD5006BB1C0 /* PlateCalculator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 201098172FAADAD5006BB1C0 /* PlateCalculator.swift */; };
 		2010981A2FAADAD5006BB1C0 /* PlateHelperView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 201098192FAADAD5006BB1C0 /* PlateHelperView.swift */; };
+		201098212FAADAD5006BB1C0 /* RPGProgressionEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 201098222FAADAD5006BB1C0 /* RPGProgressionEngine.swift */; };
+		201098232FAADAD5006BB1C0 /* CharacterSheetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 201098242FAADAD5006BB1C0 /* CharacterSheetView.swift */; };
+		201098262FAADAD5006BB1C0 /* CompletedWorkoutSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 201098252FAADAD5006BB1C0 /* CompletedWorkoutSession.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -57,6 +61,7 @@
 		201097492FAADAD5006BB1C0 /* Exercise.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Exercise.swift; sourceTree = "<group>"; };
 		2010974A2FAADAD5006BB1C0 /* ExerciseKind.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExerciseKind.swift; sourceTree = "<group>"; };
 		2010974B2FAADAD5006BB1C0 /* PersonalRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalRecord.swift; sourceTree = "<group>"; };
+		2010981F2FAADAD5006BB1C0 /* PlayerStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerStats.swift; sourceTree = "<group>"; };
 		2010974C2FAADAD5006BB1C0 /* SetLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetLog.swift; sourceTree = "<group>"; };
 		2010974D2FAADAD5006BB1C0 /* WorkoutDay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutDay.swift; sourceTree = "<group>"; };
 		2010974E2FAADAD5006BB1C0 /* WorkoutProgram.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutProgram.swift; sourceTree = "<group>"; };
@@ -78,6 +83,9 @@
 		201098152FAADAD5006BB1C0 /* MacroDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacroDashboardView.swift; sourceTree = "<group>"; };
 		201098172FAADAD5006BB1C0 /* PlateCalculator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlateCalculator.swift; sourceTree = "<group>"; };
 		201098192FAADAD5006BB1C0 /* PlateHelperView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlateHelperView.swift; sourceTree = "<group>"; };
+		201098222FAADAD5006BB1C0 /* RPGProgressionEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RPGProgressionEngine.swift; sourceTree = "<group>"; };
+		201098242FAADAD5006BB1C0 /* CharacterSheetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CharacterSheetView.swift; sourceTree = "<group>"; };
+		201098252FAADAD5006BB1C0 /* CompletedWorkoutSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompletedWorkoutSession.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -149,8 +157,10 @@
 			children = (
 				201097492FAADAD5006BB1C0 /* Exercise.swift */,
 				2010974A2FAADAD5006BB1C0 /* ExerciseKind.swift */,
+				201098252FAADAD5006BB1C0 /* CompletedWorkoutSession.swift */,
 				2010980A2FAADAD5006BB1C0 /* MealLog.swift */,
 				2010974B2FAADAD5006BB1C0 /* PersonalRecord.swift */,
+				2010981F2FAADAD5006BB1C0 /* PlayerStats.swift */,
 				2010974C2FAADAD5006BB1C0 /* SetLog.swift */,
 				2010974D2FAADAD5006BB1C0 /* WorkoutDay.swift */,
 				2010974E2FAADAD5006BB1C0 /* WorkoutProgram.swift */,
@@ -166,6 +176,7 @@
 				201098112FAADAD5006BB1C0 /* LocalFoodCatalog.swift */,
 				201098132FAADAD5006BB1C0 /* OnDeviceMealPhotoAnalyzer.swift */,
 				201098172FAADAD5006BB1C0 /* PlateCalculator.swift */,
+				201098222FAADAD5006BB1C0 /* RPGProgressionEngine.swift */,
 				201097502FAADAD5006BB1C0 /* PREngine.swift */,
 				201097512FAADAD5006BB1C0 /* WorkoutProgramSeed.swift */,
 			);
@@ -178,6 +189,7 @@
 				201098152FAADAD5006BB1C0 /* MacroDashboardView.swift */,
 				201098082FAADAD5006BB1C0 /* NutritionView.swift */,
 				201098192FAADAD5006BB1C0 /* PlateHelperView.swift */,
+				201098242FAADAD5006BB1C0 /* CharacterSheetView.swift */,
 				201097532FAADAD5006BB1C0 /* WorkoutSessionView.swift */,
 				201098022FAADAD5006BB1C0 /* WorkoutLibraryView.swift */,
 			);
@@ -346,6 +358,7 @@
 				201097582FAADAD5006BB1C0 /* ContentView.swift in Sources */,
 				201097592FAADAD5006BB1C0 /* PREngine.swift in Sources */,
 				2010975A2FAADAD5006BB1C0 /* PersonalRecord.swift in Sources */,
+				201098202FAADAD5006BB1C0 /* PlayerStats.swift in Sources */,
 				2010975B2FAADAD5006BB1C0 /* WorkoutDay.swift in Sources */,
 				2010975C2FAADAD5006BB1C0 /* ExerciseKind.swift in Sources */,
 				2010975D2FAADAD5006BB1C0 /* SetLog.swift in Sources */,
@@ -366,6 +379,9 @@
 				201098162FAADAD5006BB1C0 /* MacroDashboardView.swift in Sources */,
 				201098182FAADAD5006BB1C0 /* PlateCalculator.swift in Sources */,
 				2010981A2FAADAD5006BB1C0 /* PlateHelperView.swift in Sources */,
+				201098212FAADAD5006BB1C0 /* RPGProgressionEngine.swift in Sources */,
+				201098232FAADAD5006BB1C0 /* CharacterSheetView.swift in Sources */,
+				201098262FAADAD5006BB1C0 /* CompletedWorkoutSession.swift in Sources */,
 				2010980D2FAADAD5006BB1C0 /* NutritionView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -525,6 +541,7 @@
 				DEVELOPMENT_TEAM = 66TJD7TX77;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Scan food barcodes to quickly log branded items.";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "We use step count to show your daily activity progress.\nWe use step count to show your daily activity progress.\nWe use step count to show your daily activity progress";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Choose a meal photo to get on-device food suggestions and save a thumbnail with your log.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
@@ -565,6 +582,7 @@
 				DEVELOPMENT_TEAM = 66TJD7TX77;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Scan food barcodes to quickly log branded items.";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "We use step count to show your daily activity progress.\nWe use step count to show your daily activity progress.\nWe use step count to show your daily activity progress";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Choose a meal photo to get on-device food suggestions and save a thumbnail with your log.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;

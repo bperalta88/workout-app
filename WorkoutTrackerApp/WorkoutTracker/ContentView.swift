@@ -3,6 +3,9 @@ import SwiftData
 import HealthKit
 import Charts
 import UniformTypeIdentifiers
+#if canImport(UIKit)
+import UIKit
+#endif
 
 enum AppAppearanceMode: String, CaseIterable {
     case dark
@@ -73,8 +76,12 @@ enum WeightDisplay {
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.modelContext) private var modelContext
     @Query(sort: \WorkoutDay.dayIndex) private var workoutDays: [WorkoutDay]
     @Query(sort: \PersonalRecord.achievedAt, order: .reverse) private var personalRecords: [PersonalRecord]
+    @Query(sort: \CompletedWorkoutSession.completedAt, order: .reverse) private var completedSessions: [CompletedWorkoutSession]
+    @Query(sort: \MealLog.loggedAt, order: .reverse) private var mealLogs: [MealLog]
+    @Query(sort: \DailyQuestClaim.claimedAt, order: .reverse) private var dailyQuestClaims: [DailyQuestClaim]
 
     /// Active training plan only (excludes imported history programs so Home/History aren’t duplicated).
     private var primaryWorkoutDays: [WorkoutDay] {
@@ -86,10 +93,13 @@ struct ContentView: View {
     @StateObject private var stepSync = StepCountManager()
     @AppStorage("dailyStepGoal") private var dailyStepGoal = 10000
     @AppStorage("weeklyWorkoutGoal") private var weeklyWorkoutGoal = 5
+    @AppStorage("nutritionDailyProteinGoal") private var dailyProteinGoal = 170
     @AppStorage("appearanceMode") private var appearanceModeRaw = AppAppearanceMode.dark.rawValue
     @AppStorage("didDismissOnboardingChecklist") private var didDismissOnboardingChecklist = false
     /// `Calendar` weekday when program Day 1 starts (1 = Sunday, 2 = Monday).
     @AppStorage("programWeekStartsOnWeekday") private var programWeekStartsOnWeekday = 2
+    @State private var dailyQuestRewardMessage: String?
+    @State private var questRewardPulse = false
 
     private var appearanceMode: AppAppearanceMode {
         AppAppearanceMode(rawValue: appearanceModeRaw) ?? .dark
@@ -169,29 +179,41 @@ struct ContentView: View {
         return min(100, Int((Double(stepSync.stepCount) / Double(dailyStepGoal)) * 100))
     }
 
+    /// Program day index (1…7) for the current calendar date, from Settings → week start.
+    private var programDayIndexForToday: Int {
+        PrimaryProgram.programDayIndex(weekStartsOnWeekday: programWeekStartsOnWeekday)
+    }
+
+    /// The program template row for **today’s calendar slot** (not “next incomplete day”).
+    private var todaysProgramWorkoutDay: WorkoutDay? {
+        primaryWorkoutDays.first { $0.dayIndex == programDayIndexForToday }
+    }
+
+    /// `true` when today’s mapped workout was completed **today** (same calendar day), so we don’t roll the UI to the next template or block next week’s session.
+    private var finishedTodaysProgramWorkout: Bool {
+        completedWorkoutToday != nil
+    }
+
+    /// Most recently completed workout today (across all primary program days).
+    private var completedWorkoutToday: WorkoutDay? {
+        primaryWorkoutDays
+            .filter { day in
+                guard let t = day.sessionCompletedAt else { return false }
+                return Calendar.current.isDateInToday(t)
+            }
+            .sorted { ($0.sessionCompletedAt ?? .distantPast) > ($1.sessionCompletedAt ?? .distantPast) }
+            .first
+    }
+
+    /// Only the workout due **today**; after you finish today, this is `nil` until the next calendar training day.
     private var nextWorkoutDay: WorkoutDay? {
-        let days = primaryWorkoutDays
-        guard !days.isEmpty else { return nil }
-
-        // Calendar → program day (Settings: which weekday is Day 1). Use **session log** only so checking all sets
-        // doesn’t skip ahead before you tap “Complete Day” (or auto-finish).
-        let programDayToday = PrimaryProgram.programDayIndex(weekStartsOnWeekday: programWeekStartsOnWeekday)
-
-        func needsWork(_ d: WorkoutDay) -> Bool {
-            d.sessionCompletedAt == nil
+        // If any workout is already completed today, don't suggest another plan for today.
+        if completedWorkoutToday != nil { return nil }
+        guard let d = todaysProgramWorkoutDay else { return nil }
+        if let completedAt = d.sessionCompletedAt, Calendar.current.isDateInToday(completedAt) {
+            return nil
         }
-
-        if let todaysDay = days.first(where: { $0.dayIndex == programDayToday && needsWork($0) }) {
-            return todaysDay
-        }
-
-        if let nextLaterInWeek = days
-            .filter({ $0.dayIndex > programDayToday && needsWork($0) })
-            .min(by: { $0.dayIndex < $1.dayIndex }) {
-            return nextLaterInWeek
-        }
-
-        return days.first(where: needsWork) ?? days.first
+        return d
     }
 
     private var nextPlannedExerciseName: String? {
@@ -244,6 +266,68 @@ struct ContentView: View {
         }
     }
 
+    private struct DailyQuestState: Identifiable {
+        let id: String
+        let title: String
+        let subtitle: String
+        let xpReward: Int
+        let isComplete: Bool
+        let destinationTab: HomeTab
+    }
+
+    private var todayStart: Date { Calendar.current.startOfDay(for: .now) }
+
+    private var todaysMeals: [MealLog] {
+        mealLogs.filter { Calendar.current.isDateInToday($0.loggedAt) }
+    }
+
+    private var todaysProteinTotal: Double {
+        todaysMeals.reduce(0) { $0 + $1.proteinG }
+    }
+
+    private var todayQuestClaimIDs: Set<String> {
+        Set(
+            dailyQuestClaims
+                .filter { Calendar.current.isDate($0.claimedAt, inSameDayAs: todayStart) }
+                .map(\.questID)
+        )
+    }
+
+    private var todaysQuestClaims: [DailyQuestClaim] {
+        dailyQuestClaims
+            .filter { Calendar.current.isDate($0.claimedAt, inSameDayAs: todayStart) }
+            .sorted { $0.claimedAt > $1.claimedAt }
+    }
+
+    private var dailyQuestStates: [DailyQuestState] {
+        [
+            DailyQuestState(
+                id: "quest_log_meal",
+                title: "Fuel Logged",
+                subtitle: "Log at least one meal today",
+                xpReward: 15,
+                isComplete: !todaysMeals.isEmpty,
+                destinationTab: .nutrition
+            ),
+            DailyQuestState(
+                id: "quest_hit_protein",
+                title: "Protein Hunter",
+                subtitle: "Hit \(dailyProteinGoal)g protein (\(Int(todaysProteinTotal))/\(dailyProteinGoal)g)",
+                xpReward: 30,
+                isComplete: todaysProteinTotal >= Double(max(1, dailyProteinGoal)),
+                destinationTab: .nutrition
+            ),
+            DailyQuestState(
+                id: "quest_train",
+                title: "Battle Cleared",
+                subtitle: "Complete today's workout session",
+                xpReward: 40,
+                isComplete: completedWorkoutToday != nil,
+                destinationTab: .workouts
+            )
+        ]
+    }
+
     var body: some View {
         NavigationStack {
             ZStack(alignment: .bottom) {
@@ -268,7 +352,7 @@ struct ContentView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Open completion calendar")
-                    } else if selectedTab == .settings {
+                    } else if selectedTab == .more {
                         Button {
                             appearanceModeRaw = (appearanceMode == .dark ? AppAppearanceMode.light.rawValue : AppAppearanceMode.dark.rawValue)
                         } label: {
@@ -314,14 +398,24 @@ struct ContentView: View {
         }
         .task {
             await stepSync.requestAccessAndRefresh()
+            grantPassiveRecoveryXPIfEligible()
+            evaluateDailyQuestRewards()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 Task {
                     await stepSync.refreshTodaySteps()
                     await stepSync.refreshWeeklySteps()
+                    grantPassiveRecoveryXPIfEligible()
+                    evaluateDailyQuestRewards()
                 }
             }
+        }
+        .onChange(of: mealLogs.count) { _, _ in
+            evaluateDailyQuestRewards()
+        }
+        .onChange(of: completedSessions.count) { _, _ in
+            evaluateDailyQuestRewards()
         }
         .preferredColorScheme(appearanceMode.preferredColorScheme)
     }
@@ -331,11 +425,6 @@ struct ContentView: View {
         switch selectedTab {
         case .home:
             homeDashboard
-        case .history:
-            HistoryTabView(workoutDays: primaryWorkoutDays)
-                .padding(.horizontal, 18)
-                .padding(.top, 10)
-                .padding(.bottom, 110)
         case .nutrition:
             NutritionTabView()
                 .padding(.bottom, 110)
@@ -357,16 +446,54 @@ struct ContentView: View {
                 weeklyWorkoutGoal: weeklyWorkoutGoal,
                 dailyStepGoal: dailyStepGoal,
                 weeklyStepPoints: stepSync.weeklyStepPoints,
-                completedWorkoutPoints: weeklyCompletionPoints
+                completedWorkoutPoints: weeklyCompletionPoints,
+                completedSessions: completedSessions
             )
             .padding(.horizontal, 18)
             .padding(.top, 10)
             .padding(.bottom, 110)
-        case .settings:
-            SettingsTabView(stepSync: stepSync)
+        case .more:
+            MoreTabView(completedSessions: completedSessions, stepSync: stepSync)
                 .padding(.horizontal, 18)
                 .padding(.top, 10)
                 .padding(.bottom, 110)
+        }
+    }
+
+    private func grantPassiveRecoveryXPIfEligible() {
+        _ = PlayerStats.awardPassiveRecoveryXPIfEligible(
+            allWorkoutDays: primaryWorkoutDays,
+            in: modelContext
+        )
+    }
+
+    private func evaluateDailyQuestRewards() {
+        var awardedXP = 0
+        for quest in dailyQuestStates where quest.isComplete {
+            let awarded = PlayerStats.awardDailyQuestXPIfNeeded(
+                questID: quest.id,
+                xp: quest.xpReward,
+                in: modelContext
+            )
+            if awarded { awardedXP += quest.xpReward }
+        }
+        if awardedXP > 0 {
+            dailyQuestRewardMessage = "Quest complete: +\(awardedXP) XP"
+            questRewardPulse = true
+#if canImport(UIKit)
+            let feedback = UINotificationFeedbackGenerator()
+            feedback.prepare()
+            feedback.notificationOccurred(.success)
+#endif
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
+                questRewardPulse = false
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                if dailyQuestRewardMessage == "Quest complete: +\(awardedXP) XP" {
+                    dailyQuestRewardMessage = nil
+                }
+            }
+            try? modelContext.save()
         }
     }
 
@@ -389,6 +516,7 @@ struct ContentView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 homeHeroCard
+                homeDailyQuestCard
                 MacroDashboardView {
                     selectedTab = .nutrition
                 }
@@ -403,6 +531,102 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
+    private var homeDailyQuestCard: some View {
+        let unclaimed = dailyQuestStates.filter { !todayQuestClaimIDs.contains($0.id) }
+        let actionable = unclaimed.filter { !$0.isComplete }
+        let completedCount = dailyQuestStates.count - unclaimed.count
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Daily Quests")
+                    .font(.system(.subheadline, design: .default, weight: .semibold))
+                    .foregroundStyle(AppTheme.titleText)
+                Spacer()
+                Text("\(completedCount)/\(dailyQuestStates.count)")
+                    .font(.system(.caption, design: .default, weight: .semibold))
+                    .foregroundStyle(completedCount == dailyQuestStates.count ? .green : AppTheme.primaryBlue)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background((completedCount == dailyQuestStates.count ? Color.green : AppTheme.primaryBlue).opacity(0.12), in: Capsule())
+            }
+
+            if let message = dailyQuestRewardMessage {
+                Text(message)
+                    .font(.system(.caption, design: .default, weight: .semibold))
+                    .foregroundStyle(.green)
+                    .scaleEffect(questRewardPulse ? 1.05 : 1.0)
+                    .animation(.spring(response: 0.26, dampingFraction: 0.62), value: questRewardPulse)
+                    .transition(.opacity)
+            }
+
+            if actionable.isEmpty {
+                Text("All quests completed today. XP claimed - come back tomorrow for new quests.")
+                    .font(.system(.subheadline, design: .default, weight: .medium))
+                    .foregroundStyle(AppTheme.mutedText)
+            } else {
+                ForEach(actionable) { quest in
+                    Button {
+                        selectedTab = quest.destinationTab
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(AppTheme.primaryBlue)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(quest.title)
+                                    .font(.system(.subheadline, design: .default, weight: .semibold))
+                                    .foregroundStyle(AppTheme.titleText)
+                                Text(quest.subtitle)
+                                    .font(.system(.caption, design: .default, weight: .medium))
+                                    .foregroundStyle(AppTheme.mutedText)
+                            }
+                            Spacer()
+                            Text("+\(quest.xpReward) XP")
+                                .font(.system(.caption, design: .default, weight: .bold))
+                                .foregroundStyle(AppTheme.accentLime)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .buttonStyle(.plain)
+                    .transition(.asymmetric(insertion: .opacity.combined(with: .move(edge: .top)), removal: .opacity.combined(with: .move(edge: .leading))))
+                }
+            }
+
+            if !todaysQuestClaims.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Claimed today")
+                        .font(.system(.caption, design: .default, weight: .semibold))
+                        .foregroundStyle(AppTheme.mutedText)
+                    ForEach(todaysQuestClaims, id: \.persistentModelID) { claim in
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.green)
+                            Text(questTitle(for: claim.questID))
+                                .font(.system(.caption, design: .default, weight: .medium))
+                                .foregroundStyle(AppTheme.bodyText)
+                            Spacer()
+                            Text("+\(claim.xpAwarded) XP")
+                                .font(.system(.caption, design: .default, weight: .bold))
+                                .foregroundStyle(AppTheme.accentLime)
+                        }
+                        .transition(.asymmetric(insertion: .opacity.combined(with: .move(edge: .trailing)), removal: .opacity))
+                    }
+                }
+                .padding(.top, 2)
+            }
+        }
+        .padding(14)
+        .minimalCard(cornerRadius: AppTheme.cardCornerRadius)
+        .animation(.easeInOut(duration: 0.24), value: actionable.count)
+        .animation(.easeInOut(duration: 0.24), value: todaysQuestClaims.count)
+        .animation(.easeInOut(duration: 0.2), value: dailyQuestRewardMessage)
+    }
+
+    private func questTitle(for questID: String) -> String {
+        dailyQuestStates.first(where: { $0.id == questID })?.title ?? "Daily Quest"
+    }
+
     private var homeHeroCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Good morning")
@@ -412,6 +636,22 @@ struct ContentView: View {
             Text("Ready to train?")
                 .font(.system(size: 28, weight: .bold, design: .default))
                 .foregroundStyle(AppTheme.titleText)
+
+            if let done = completedWorkoutToday {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.green)
+                    Text("Completed today: \(done.focus)")
+                        .font(.system(.caption, design: .default, weight: .semibold))
+                        .foregroundStyle(AppTheme.titleText.opacity(0.92))
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(Color.green.opacity(AppTheme.isDarkModeEnabled ? 0.12 : 0.10), in: Capsule())
+                .overlay(Capsule().strokeBorder(Color.green.opacity(0.28), lineWidth: 1))
+            }
 
             if let day = nextWorkoutDay {
                 NavigationLink {
@@ -425,10 +665,25 @@ struct ContentView: View {
                         .background(AppTheme.primaryBlue, in: Capsule())
                 }
                 .buttonStyle(.plain)
-            } else {
+            } else if let done = completedWorkoutToday {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("All done for today")
+                        .font(.system(.subheadline, design: .default, weight: .semibold))
+                        .foregroundStyle(.green)
+                    Text("You finished \(done.focus). Next session shows on your next training day.")
+                        .font(.system(.caption, design: .default, weight: .medium))
+                        .foregroundStyle(AppTheme.mutedText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else if primaryWorkoutDays.isEmpty {
                 Text("Seed a program to start.")
                     .font(.system(.subheadline, design: .default, weight: .medium))
                     .foregroundStyle(AppTheme.bodyText)
+            } else {
+                Text("No workout is mapped to today’s program slot. Open Workouts to pick a day, or check Settings → week start.")
+                    .font(.system(.caption, design: .default, weight: .medium))
+                    .foregroundStyle(AppTheme.mutedText)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -445,6 +700,8 @@ struct ContentView: View {
                     todayPlanCardBodyForMock(day: day)
                 }
                 .buttonStyle(.plain)
+            } else if let done = completedWorkoutToday {
+                todayPlanCardRestBody(completedDay: done)
             } else {
                 todayPlanCardBodyForMock(day: nil)
             }
@@ -492,10 +749,54 @@ struct ContentView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(AppTheme.mutedText.opacity(0.8))
                 }
-            } else {
+            } else if primaryWorkoutDays.isEmpty {
                 Text("No workout days found. Import or seed a plan to begin.")
                     .font(.system(.subheadline, design: .default, weight: .regular))
                     .foregroundStyle(AppTheme.mutedText)
+            } else {
+                Text("No session is assigned to today’s calendar slot. Check Settings for which weekday is program Day 1, or open the Workouts tab.")
+                    .font(.system(.subheadline, design: .default, weight: .regular))
+                    .foregroundStyle(AppTheme.mutedText)
+            }
+        }
+        .padding(14)
+        .minimalCard(cornerRadius: AppTheme.cardCornerRadius)
+    }
+
+    private func todayPlanCardRestBody(completedDay: WorkoutDay) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Today's plan")
+                    .font(.system(.subheadline, design: .default, weight: .semibold))
+                    .foregroundStyle(AppTheme.titleText)
+                Spacer()
+                Text(Date.now.formatted(.dateTime.weekday(.abbreviated)))
+                    .font(.system(.caption, design: .default, weight: .semibold))
+                    .foregroundStyle(.green)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.green.opacity(0.12), in: Capsule())
+                    .overlay(Capsule().strokeBorder(Color.green.opacity(0.35), lineWidth: 1))
+            }
+
+            HStack(alignment: .top, spacing: 12) {
+                Circle()
+                    .fill(Color.green.opacity(0.15))
+                    .frame(width: 44, height: 44)
+                    .overlay(
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 22, weight: .semibold))
+                            .foregroundStyle(.green)
+                    )
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Nothing else due today")
+                        .font(.system(.body, design: .default, weight: .semibold))
+                        .foregroundStyle(AppTheme.titleText)
+                    Text("You already completed \(completedDay.focus) (Day \(completedDay.dayIndex)). The next session for your calendar day will show here when that day arrives.")
+                        .font(.system(.caption, design: .default, weight: .medium))
+                        .foregroundStyle(AppTheme.mutedText)
+                }
             }
         }
         .padding(14)
@@ -652,9 +953,9 @@ struct ContentView: View {
                     .buttonStyle(.plain)
 
                     Button {
-                        selectedTab = .settings
+                        selectedTab = .more
                     } label: {
-                        HomeActionPill(title: "Settings", icon: "gearshape.fill")
+                        HomeActionPill(title: "More", icon: "ellipsis.circle.fill")
                     }
                     .buttonStyle(.plain)
                 }
@@ -706,9 +1007,33 @@ struct ContentView: View {
                 todayPlanCardBody(day: day)
             }
             .buttonStyle(.plain)
+        } else if let done = completedWorkoutToday {
+            todayPlanCardBodyRest(completedDay: done)
         } else {
             todayPlanCardBody(day: nil)
         }
+    }
+
+    private func todayPlanCardBodyRest(completedDay: WorkoutDay) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .center) {
+                Text("Today's Plan")
+                    .font(.system(.subheadline, design: .default, weight: .semibold))
+                    .foregroundStyle(AppTheme.titleText)
+                Spacer()
+                Text("Done")
+                    .font(.system(.caption, design: .default, weight: .semibold))
+                    .foregroundStyle(.green)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.green.opacity(0.12), in: Capsule())
+            }
+            Text("Nothing else due today — \(completedDay.focus) (Day \(completedDay.dayIndex)) is complete.")
+                .font(.system(.subheadline, design: .default, weight: .regular))
+                .foregroundStyle(AppTheme.mutedText)
+        }
+        .padding(14)
+        .minimalCard(cornerRadius: AppTheme.cardCornerRadius)
     }
 
     private func todayPlanCardBody(day: WorkoutDay?) -> some View {
@@ -745,8 +1070,12 @@ struct ContentView: View {
                         .foregroundStyle(AppTheme.mutedText)
                         .labelStyle(.titleAndIcon)
                 }
-            } else {
+            } else if primaryWorkoutDays.isEmpty {
                 Text("No workout days found. Import or seed a plan to begin.")
+                    .font(.system(.subheadline, design: .default, weight: .regular))
+                    .foregroundStyle(AppTheme.mutedText)
+            } else {
+                Text("No session mapped to today’s calendar slot.")
                     .font(.system(.subheadline, design: .default, weight: .regular))
                     .foregroundStyle(AppTheme.mutedText)
             }
@@ -758,11 +1087,10 @@ struct ContentView: View {
     private var tabTitle: String {
         switch selectedTab {
         case .home: return "Home"
-        case .history: return "History"
-        case .workouts: return "Workouts"
+        case .workouts: return "Train"
         case .nutrition: return "Nutrition"
         case .progress: return "Progress"
-        case .settings: return "Settings"
+        case .more: return "More"
         }
     }
 
@@ -929,8 +1257,12 @@ struct ContentView: View {
                         ActionPill(title: "Start Today", icon: "play.fill")
                     }
                     .buttonStyle(.plain)
+                } else if finishedTodaysProgramWorkout {
+                    ActionPill(title: "Done today", icon: "checkmark.circle.fill")
+                        .opacity(0.55)
                 } else {
                     ActionPill(title: "Start Today", icon: "play.fill")
+                        .opacity(0.45)
                 }
 
                 Button {
@@ -1265,10 +1597,12 @@ private struct ProgressTabView: View {
     var dailyStepGoal: Int
     var weeklyStepPoints: [StepPoint]
     var completedWorkoutPoints: [CompletionPoint]
+    var completedSessions: [CompletedWorkoutSession]
 
     var body: some View {
         ScrollView {
             VStack(spacing: 12) {
+                weeklyReviewCard
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                     ProgressMetricTile(
                         title: "Weekly Progress",
@@ -1303,6 +1637,82 @@ private struct ProgressTabView: View {
                 trendCard
             }
         }
+    }
+
+    private var weeklyReviewCard: some View {
+        let calendar = Calendar.current
+        let now = Date()
+        let weekday = calendar.component(.weekday, from: now)
+        let mondayOffset = (weekday + 5) % 7
+        let weekStart = calendar.startOfDay(for: calendar.date(byAdding: .day, value: -mondayOffset, to: now) ?? now)
+        let nextWeek = calendar.date(byAdding: .day, value: 7, to: weekStart) ?? now
+        let thisWeek = completedSessions.filter { $0.completedAt >= weekStart && $0.completedAt < nextWeek }
+
+        let sessionCount = thisWeek.count
+        var totalVolume = 0.0
+        var volumeByExercise: [String: Double] = [:]
+        for session in thisWeek {
+            for exercise in session.exerciseSnapshots {
+                let exerciseVolume = exercise.setSnapshots
+                    .filter(\.isCompleted)
+                    .reduce(0.0) { $0 + (Double($1.reps) * $1.weight) }
+                totalVolume += exerciseVolume
+                volumeByExercise[exercise.name, default: 0] += exerciseVolume
+            }
+        }
+        let topExercises = volumeByExercise
+            .sorted { $0.value > $1.value }
+            .prefix(3)
+            .map(\.key)
+        let goalHit = weeklyWorkoutGoal > 0 && sessionCount >= weeklyWorkoutGoal
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Weekly Review")
+                    .font(.system(.subheadline, design: .default, weight: .semibold))
+                    .foregroundStyle(AppTheme.titleText)
+                Spacer()
+                Text(goalHit ? "Goal hit" : "\(sessionCount)/\(max(1, weeklyWorkoutGoal))")
+                    .font(.system(.caption, design: .default, weight: .semibold))
+                    .foregroundStyle(goalHit ? .green : AppTheme.primaryBlue)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background((goalHit ? Color.green : AppTheme.primaryBlue).opacity(0.12), in: Capsule())
+            }
+
+            HStack(spacing: 12) {
+                reviewStat(title: "Sessions", value: "\(sessionCount)")
+                reviewStat(title: "Volume", value: WeightDisplay.formatted(totalVolume, unit: .lb))
+                reviewStat(title: "PRs", value: "See PR Board")
+            }
+
+            if topExercises.isEmpty {
+                Text("No completed sessions this week yet. Finish one day to populate your review.")
+                    .font(.system(.caption, design: .default, weight: .medium))
+                    .foregroundStyle(AppTheme.mutedText)
+            } else {
+                Text("Top lifts this week: \(topExercises.joined(separator: " • "))")
+                    .font(.system(.caption, design: .default, weight: .medium))
+                    .foregroundStyle(AppTheme.bodyText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(14)
+        .minimalCard(cornerRadius: AppTheme.cardCornerRadius)
+    }
+
+    private func reviewStat(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(AppTheme.mutedText)
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.titleText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var trendCard: some View {
@@ -1341,6 +1751,80 @@ private struct ProgressTabView: View {
                     AxisValueLabel(format: .dateTime.weekday(.narrow))
                 }
             }
+        }
+        .padding(14)
+        .minimalCard(cornerRadius: AppTheme.cardCornerRadius)
+    }
+}
+
+private struct MoreTabView: View {
+    var completedSessions: [CompletedWorkoutSession]
+    @ObservedObject var stepSync: StepCountManager
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                NavigationLink {
+                    CharacterSheetView()
+                        .padding(.top, 10)
+                } label: {
+                    moreCard(
+                        title: "Character",
+                        subtitle: "RPG build, forms, and stat allocation",
+                        icon: "person.crop.rectangle.stack.fill"
+                    )
+                }
+                .buttonStyle(.plain)
+
+                NavigationLink {
+                    HistoryTabView(completedSessions: completedSessions)
+                        .padding(.top, 10)
+                } label: {
+                    moreCard(
+                        title: "Workout History",
+                        subtitle: "Browse your completed sessions timeline",
+                        icon: "clock.arrow.trianglehead.counterclockwise.rotate.90"
+                    )
+                }
+                .buttonStyle(.plain)
+
+                NavigationLink {
+                    SettingsTabView(stepSync: stepSync)
+                        .padding(.top, 10)
+                } label: {
+                    moreCard(
+                        title: "Settings",
+                        subtitle: "Backup, appearance, goals, and app preferences",
+                        icon: "gearshape.fill"
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func moreCard(title: String, subtitle: String, icon: String) -> some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(AppTheme.primaryBlue.opacity(0.12))
+                .frame(width: 42, height: 42)
+                .overlay(
+                    Image(systemName: icon)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(AppTheme.primaryBlue)
+                )
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(.subheadline, design: .default, weight: .semibold))
+                    .foregroundStyle(AppTheme.titleText)
+                Text(subtitle)
+                    .font(.system(.caption, design: .default, weight: .medium))
+                    .foregroundStyle(AppTheme.mutedText)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.mutedText)
         }
         .padding(14)
         .minimalCard(cornerRadius: AppTheme.cardCornerRadius)
@@ -1622,31 +2106,21 @@ private struct CalendarDayCell: Identifiable {
 }
 
 private struct HistoryTabView: View {
-    var workoutDays: [WorkoutDay]
-
-    private var completedDays: [WorkoutDay] {
-        workoutDays
-            .filter(\.isCompleted)
-            .sorted { historySortDate($0) > historySortDate($1) }
-    }
-
-    private func historySortDate(_ day: WorkoutDay) -> Date {
-        day.sessionCompletedAt ?? day.sessionStartedAt ?? .distantPast
-    }
+    var completedSessions: [CompletedWorkoutSession]
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                if completedDays.isEmpty {
+                if completedSessions.isEmpty {
                     EmptyStateCard(
                         title: "No sessions yet",
-                        subtitle: "Complete a workout day and it will appear here.",
+                        subtitle: "Complete a workout day and it will be permanently saved here.",
                         icon: "clock.badge.checkmark"
                     )
                 } else {
-                    ForEach(completedDays, id: \.persistentModelID) { day in
+                    ForEach(completedSessions, id: \.persistentModelID) { session in
                         NavigationLink {
-                            SessionHistoryDetailView(day: day)
+                            SessionHistoryDetailView(session: session)
                         } label: {
                             HStack(spacing: 12) {
                                 ZStack {
@@ -1659,19 +2133,16 @@ private struct HistoryTabView: View {
                                 }
 
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("Day \(day.dayIndex) • \(day.focus)")
+                                    Text("Day \(session.sourceDayIndex) • \(session.dayFocus)")
                                         .font(.system(.body, design: .default, weight: .semibold))
                                         .foregroundStyle(AppTheme.titleText)
-                                    let stamp = day.sessionCompletedAt ?? day.sessionStartedAt
-                                    if let stamp {
-                                        HStack(spacing: 10) {
-                                            Label(stamp.formatted(date: .abbreviated, time: .omitted), systemImage: "calendar")
-                                            Label(stamp.formatted(date: .omitted, time: .shortened), systemImage: "clock")
-                                        }
-                                        .font(.system(.caption, design: .default, weight: .medium))
-                                        .foregroundStyle(AppTheme.primaryBlue)
-                                        .labelStyle(.titleAndIcon)
+                                    HStack(spacing: 10) {
+                                        Label(session.completedAt.formatted(date: .abbreviated, time: .omitted), systemImage: "calendar")
+                                        Label(session.completedAt.formatted(date: .omitted, time: .shortened), systemImage: "clock")
                                     }
+                                    .font(.system(.caption, design: .default, weight: .medium))
+                                    .foregroundStyle(AppTheme.primaryBlue)
+                                    .labelStyle(.titleAndIcon)
                                 }
                                 Spacer()
                                 Image(systemName: "chevron.right")
@@ -1690,11 +2161,15 @@ private struct HistoryTabView: View {
 }
 
 private struct SessionHistoryDetailView: View {
-    @Bindable var day: WorkoutDay
+    @Bindable var session: CompletedWorkoutSession
     @AppStorage("weightUnit") private var weightUnitRaw = WeightUnit.lb.rawValue
 
     private var weightUnit: WeightUnit {
         WeightUnit(rawValue: weightUnitRaw) ?? .lb
+    }
+
+    private var sortedExercises: [CompletedExerciseSnapshot] {
+        session.exerciseSnapshots.sorted { $0.sortOrder < $1.sortOrder }
     }
 
     var body: some View {
@@ -1702,21 +2177,19 @@ private struct SessionHistoryDetailView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Day \(day.dayIndex)")
+                        Text("Day \(session.sourceDayIndex)")
                             .font(.system(size: 22, weight: .semibold, design: .default))
-                        Text(day.focus)
+                        Text(session.dayFocus)
                             .font(.system(.subheadline, design: .default, weight: .medium))
                             .foregroundStyle(AppTheme.mutedText)
                     }
                     Spacer()
-                    if let stamp = day.sessionCompletedAt ?? day.sessionStartedAt {
-                        Text(stamp, style: .date)
-                            .font(.system(.caption, design: .default, weight: .semibold))
-                            .foregroundStyle(AppTheme.primaryBlue)
-                    }
+                    Text(session.completedAt, style: .date)
+                        .font(.system(.caption, design: .default, weight: .semibold))
+                        .foregroundStyle(AppTheme.primaryBlue)
                 }
 
-                ForEach(day.sortedExercises, id: \.persistentModelID) { exercise in
+                ForEach(sortedExercises, id: \.persistentModelID) { exercise in
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(alignment: .top) {
                             Text(exercise.name)
@@ -1724,7 +2197,7 @@ private struct SessionHistoryDetailView: View {
                                 .foregroundStyle(AppTheme.titleText)
                             Spacer()
                             if exercise.kind == .strength {
-                                Text(exercise.displayTargetSetsReps)
+                                Text(exercise.targetSetsReps)
                                     .font(.system(.caption, design: .default, weight: .medium))
                                     .foregroundStyle(AppTheme.mutedText)
                             }
@@ -1744,7 +2217,7 @@ private struct SessionHistoryDetailView: View {
                                 .foregroundStyle(exercise.cardioCompleted ? .green : AppTheme.mutedText)
                         } else {
                             VStack(alignment: .leading, spacing: 6) {
-                                ForEach(exercise.sortedSetLogs, id: \.persistentModelID) { log in
+                                ForEach(exercise.setSnapshots.sorted { $0.setIndex < $1.setIndex }, id: \.persistentModelID) { log in
                                     HStack {
                                         Text("Set \(log.setIndex)")
                                             .font(.system(.caption, design: .default, weight: .semibold))
@@ -2196,29 +2669,26 @@ private enum HomeTab: CaseIterable {
     case home
     case workouts
     case nutrition
-    case history
     case progress
-    case settings
+    case more
 
     var title: String {
         switch self {
         case .home: return "Home"
-        case .history: return "History"
-        case .workouts: return "Workouts"
+        case .workouts: return "Train"
         case .nutrition: return "Meals"
         case .progress: return "Progress"
-        case .settings: return "Settings"
+        case .more: return "More"
         }
     }
 
     var icon: String {
         switch self {
         case .home: return "house.fill"
-        case .history: return "clock.arrow.trianglehead.counterclockwise.rotate.90"
-        case .workouts: return "list.bullet.rectangle"
+        case .workouts: return "dumbbell.fill"
         case .nutrition: return "fork.knife"
         case .progress: return "chart.line.uptrend.xyaxis"
-        case .settings: return "gearshape.fill"
+        case .more: return "ellipsis.circle.fill"
         }
     }
 }
@@ -2507,7 +2977,7 @@ private enum CSVWorkoutImportService {
         2026-05-05,2,Upper Body,Incline Dumbbell Press,strength,3,8,55,true,,3x10,
         2026-05-05,2,Upper Body,Lat Pulldown,strength,1,12,120,true,,3x12,
         2026-05-05,2,Upper Body,Lat Pulldown,strength,2,11,120,true,,3x12,
-        2026-05-05,2,Upper Body,Treadmill Walk,cardio,,,,,true,20 min,Incline 8 speed 3.0
+        2026-05-05,2,Upper Body,Treadmill Walk,cardio,,,,,true,30 min,Incline 8 speed 3.0
         """
     }
 

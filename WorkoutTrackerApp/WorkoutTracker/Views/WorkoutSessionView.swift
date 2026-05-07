@@ -44,6 +44,7 @@ struct WorkoutSessionView: View {
                 ForEach(day.sortedExercises, id: \.persistentModelID) { exercise in
                     ExerciseSessionCard(
                         exercise: exercise,
+                        workoutDay: day,
                         prHighlightSetIDs: prHighlightSetIDs,
                         onCardioCompletedChange: {
                             // Incomplete input should reopen a completed day.
@@ -80,20 +81,29 @@ struct WorkoutSessionView: View {
         }
         .overlay {
             if isPRModalPresented, let celebration = prCelebration {
-                PRCelebrationOverlay(
-                    exerciseName: celebration.exerciseName,
-                    weight: celebration.weight,
-                    reps: celebration.reps,
-                    previousPR: celebration.previousPR,
-                    onDismiss: {
-                        withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) {
-                            isPRModalPresented = false
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                            prCelebration = nil
-                        }
+                Group {
+                    if celebration.isBossRaid {
+                        BossDefeatedOverlay(
+                            exerciseName: celebration.exerciseName,
+                            weight: celebration.weight,
+                            reps: celebration.reps,
+                            previousPR: celebration.previousPR,
+                            onDismiss: {
+                                dismissPRModal()
+                            }
+                        )
+                    } else {
+                        PRCelebrationOverlay(
+                            exerciseName: celebration.exerciseName,
+                            weight: celebration.weight,
+                            reps: celebration.reps,
+                            previousPR: celebration.previousPR,
+                            onDismiss: {
+                                dismissPRModal()
+                            }
+                        )
                     }
-                )
+                }
                 .transition(.opacity.combined(with: .scale(scale: 1.03)))
             }
         }
@@ -142,9 +152,26 @@ struct WorkoutSessionView: View {
         }
     }
 
+    private func dismissPRModal() {
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) {
+            isPRModalPresented = false
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            prCelebration = nil
+        }
+    }
+
     private func handleSetCompletion(exercise: Exercise, setLog: SetLog, completed: Bool) {
         if day.sessionCompletedAt != nil, !completed {
             day.sessionCompletedAt = nil
+        }
+
+        if exercise.kind == .strength, RPGProgressionEngine.isAccessoryMovement(exerciseName: exercise.name) {
+            if completed {
+                PlayerStats.awardAccessoryXP(reps: setLog.reps, in: modelContext)
+            } else {
+                PlayerStats.rollbackAccessoryXP(reps: setLog.reps, in: modelContext)
+            }
         }
 
         guard exercise.kind == .strength, completed else {
@@ -152,6 +179,12 @@ struct WorkoutSessionView: View {
             try? modelContext.save()
             return
         }
+
+        let wasBossRaid = PREngine.isBossRaidExercise(
+            exercise: exercise,
+            scheduledDay: day,
+            in: modelContext
+        )
 
         let result = PREngine.evaluateCompletionForPersonalRecord(
             exerciseName: exercise.name,
@@ -161,25 +194,25 @@ struct WorkoutSessionView: View {
         )
 
         if result.isNewRecord {
+            if wasBossRaid {
+                PlayerStats.awardBossDefeatStatPoints(points: 3, in: modelContext)
+            }
             try? modelContext.save()
             prHighlightSetIDs.insert(setLog.persistentModelID)
             prCelebration = PRCelebrationState(
                 exerciseName: exercise.name,
                 weight: result.currentWeight,
                 reps: result.currentReps,
-                previousPR: result.previousMaxWeight
+                previousPR: result.previousMaxWeight,
+                isBossRaid: wasBossRaid
             )
             withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
                 isPRModalPresented = true
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.8) {
+            let autoDismiss = wasBossRaid ? 4.2 : 2.8
+            DispatchQueue.main.asyncAfter(deadline: .now() + autoDismiss) {
                 if isPRModalPresented {
-                    withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) {
-                        isPRModalPresented = false
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                        prCelebration = nil
-                    }
+                    dismissPRModal()
                 }
             }
         } else {
@@ -314,13 +347,17 @@ struct WorkoutSessionView: View {
         day.isSessionActive = false
         let previousCompleted = day.sessionCompletedAt
         let previousCount = day.completionCount
-        day.sessionCompletedAt = .now
+        let completedAt = Date()
+        day.sessionCompletedAt = completedAt
         day.completionCount += 1
+        let snapshot = makeCompletedSessionSnapshot(completedAt: completedAt)
+        modelContext.insert(snapshot)
         do {
             try modelContext.save()
         } catch {
             day.sessionCompletedAt = previousCompleted
             day.completionCount = previousCount
+            modelContext.delete(snapshot)
             showSessionMessage("Couldn’t save — try again")
             return
         }
@@ -330,6 +367,40 @@ struct WorkoutSessionView: View {
         )
         sessionSummary = buildSessionSummary()
         showSessionMessage("Day completed")
+    }
+
+    private func makeCompletedSessionSnapshot(completedAt: Date) -> CompletedWorkoutSession {
+        let session = CompletedWorkoutSession(
+            sourceDayIndex: day.dayIndex,
+            dayFocus: day.focus,
+            completedAt: completedAt,
+            completionCountAtCapture: day.completionCount
+        )
+
+        let exerciseSnapshots = day.sortedExercises.map { exercise -> CompletedExerciseSnapshot in
+            let setSnapshots = exercise.sortedSetLogs.map { set in
+                CompletedSetSnapshot(
+                    setIndex: set.setIndex,
+                    reps: set.reps,
+                    weight: set.weight,
+                    isCompleted: set.isCompleted
+                )
+            }
+            let exerciseSnapshot = CompletedExerciseSnapshot(
+                name: exercise.name,
+                targetSetsReps: exercise.targetSetsReps,
+                kindRaw: exercise.kindRaw,
+                cardioCompleted: exercise.cardioCompleted,
+                cardioDurationNote: exercise.cardioDurationNote,
+                sortOrder: exercise.sortOrder,
+                setSnapshots: setSnapshots
+            )
+            exerciseSnapshot.session = session
+            setSnapshots.forEach { $0.exercise = exerciseSnapshot }
+            return exerciseSnapshot
+        }
+        session.exerciseSnapshots = exerciseSnapshots
+        return session
     }
 
     private func reopenDay() {
@@ -501,21 +572,42 @@ struct WorkoutSessionView: View {
 
 private struct ExerciseSessionCard: View {
     @Bindable var exercise: Exercise
+    var workoutDay: WorkoutDay
     @Environment(\.modelContext) private var modelContext
+    @Query(sort: \PlayerStats.id) private var statsRows: [PlayerStats]
     @AppStorage("weightUnit") private var weightUnitRaw = WeightUnit.lb.rawValue
     @State private var isEditingSets = false
     @State private var showAlternatives = false
+    @State private var bossBorderPulse = false
     var prHighlightSetIDs: Set<PersistentIdentifier>
     var onCardioCompletedChange: () -> Void
     var onSetCompletedChange: (SetLog, Bool) -> Void
     var onDeletedSetLog: (PersistentIdentifier) -> Void
 
+    private var bossStatus: PREngine.BossRaidStatus {
+        PREngine.bossRaidStatus(exercise: exercise, scheduledDay: workoutDay, in: modelContext)
+    }
+
+    private var isBossRaid: Bool { bossStatus.isBossRaid }
+    private var strengthStat: Int { statsRows.first?.strengthStat ?? 0 }
+    private var adjustedTargetText: String {
+        RPGProgressionEngine.adjustedRepTargetText(
+            base: exercise.displayTargetSetsReps,
+            strengthStat: strengthStat,
+            applies: RPGProgressionEngine.isHeavyBarbellCompound(exerciseName: exercise.name)
+        )
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if isBossRaid {
+                bossRaidBanner
+            }
+
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: exercise.kind == .cardio ? "figure.walk" : "dumbbell.fill")
                     .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(AppTheme.primaryBlue)
+                    .foregroundStyle(isBossRaid ? Color(red: 1, green: 0.35, blue: 0.32) : AppTheme.primaryBlue)
                     .padding(.top, 2)
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -525,7 +617,7 @@ private struct ExerciseSessionCard: View {
                         .fixedSize(horizontal: false, vertical: true)
 
                     if exercise.kind == .strength {
-                        Text("Target: \(exercise.displayTargetSetsReps)")
+                        Text("Target: \(adjustedTargetText)")
                             .font(.system(.caption, design: .default, weight: .medium))
                             .foregroundStyle(AppTheme.mutedText)
                     }
@@ -567,12 +659,83 @@ private struct ExerciseSessionCard: View {
             }
         }
         .padding(16)
-        .minimalCard(cornerRadius: AppTheme.cardCornerRadius)
+        .background(
+            RoundedRectangle(cornerRadius: AppTheme.cardCornerRadius, style: .continuous)
+                .fill(
+                    isBossRaid
+                        ? Color(red: 0.12, green: 0.04, blue: 0.06)
+                        : AppTheme.cardBackground
+                )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardCornerRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: AppTheme.cardCornerRadius, style: .continuous)
+                .strokeBorder(
+                    isBossRaid
+                        ? LinearGradient(
+                            colors: [
+                                Color.red.opacity(bossBorderPulse ? 0.95 : 0.45),
+                                Color(red: 0.9, green: 0.15, blue: 0.12).opacity(bossBorderPulse ? 0.85 : 0.4)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                        : LinearGradient(colors: [AppTheme.cardBorder, AppTheme.cardBorder], startPoint: .top, endPoint: .bottom),
+                    lineWidth: isBossRaid ? (bossBorderPulse ? 3.5 : 2.5) : 1
+                )
+        }
+        .shadow(
+            color: isBossRaid ? Color.red.opacity(0.35) : AppTheme.cardShadow,
+            radius: isBossRaid ? 14 : AppTheme.cardShadowRadius,
+            x: 0,
+            y: isBossRaid ? 6 : AppTheme.cardShadowY
+        )
+        .onAppear {
+            guard isBossRaid else { return }
+            bossBorderPulse = true
+        }
+        .onChange(of: isBossRaid) { _, on in
+            bossBorderPulse = on
+        }
+        .animation(
+            .easeInOut(duration: 0.75).repeatForever(autoreverses: true),
+            value: bossBorderPulse
+        )
         .sheet(isPresented: $showAlternatives) {
             ExerciseAlternativesSheet(exerciseName: exercise.name) {
                 showAlternatives = false
             }
         }
+    }
+
+    private var bossRaidBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(Color.yellow)
+            Text("WARNING: CLASS ADVANCEMENT BOSS")
+                .font(.system(size: 11, weight: .heavy, design: .rounded))
+                .foregroundStyle(Color(red: 1, green: 0.92, blue: 0.75))
+                .tracking(0.6)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(red: 0.45, green: 0.02, blue: 0.06),
+                    Color(red: 0.22, green: 0.02, blue: 0.08)
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            ),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.red.opacity(0.65), lineWidth: 1)
+        )
     }
 
     @ViewBuilder
@@ -1122,6 +1285,197 @@ private struct PRCelebrationState {
     var weight: Double
     var reps: Int
     var previousPR: Double?
+    var isBossRaid: Bool
+}
+
+// MARK: - Boss defeat (PR on raid)
+
+private struct BossShakeEffect: GeometryEffect {
+    var travel: CGFloat
+    var shakes: CGFloat
+    var animatableData: CGFloat
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        let t = travel * sin(animatableData * .pi * shakes)
+        let ty = travel * 0.4 * cos(animatableData * .pi * (shakes + 0.5))
+        return ProjectionTransform(CGAffineTransform(translationX: t, y: ty))
+    }
+}
+
+private struct BossDefeatedOverlay: View {
+    var exerciseName: String
+    var weight: Double
+    var reps: Int
+    var previousPR: Double?
+    var onDismiss: () -> Void
+
+    @State private var animateIn = false
+    @State private var shakeAmount: CGFloat = 0
+    @AppStorage("weightUnit") private var weightUnitRaw = WeightUnit.lb.rawValue
+
+    private var weightUnit: WeightUnit {
+        WeightUnit(rawValue: weightUnitRaw) ?? .lb
+    }
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.02, green: 0.01, blue: 0.02),
+                            Color(red: 0.18, green: 0.02, blue: 0.04)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .opacity(0.94)
+                )
+                .ignoresSafeArea()
+
+            RadialGradient(
+                colors: [
+                    Color(red: 0.55, green: 0.08, blue: 0.1).opacity(0.45),
+                    Color.clear
+                ],
+                center: .center,
+                startRadius: 40,
+                endRadius: 320
+            )
+            .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.42, green: 0.06, blue: 0.08),
+                                Color(red: 0.12, green: 0.02, blue: 0.05)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(maxWidth: 360, minHeight: 320)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 25, style: .continuous)
+                            .strokeBorder(
+                                LinearGradient(
+                                    colors: [
+                                        Color(red: 1, green: 0.82, blue: 0.35),
+                                        Color(red: 0.75, green: 0.45, blue: 0.1)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                lineWidth: 2.5
+                            )
+                            .padding(2)
+                    }
+                    .overlay { bossContent }
+                    .shadow(color: Color(red: 0.9, green: 0.35, blue: 0.12).opacity(0.55), radius: 28)
+            }
+            .padding(.horizontal, 22)
+            .scaleEffect(animateIn ? 1 : 0.72)
+            .opacity(animateIn ? 1 : 0)
+            .modifier(BossShakeEffect(travel: 11, shakes: 6, animatableData: shakeAmount))
+            .animation(.spring(response: 0.5, dampingFraction: 0.72), value: animateIn)
+        }
+        .onTapGesture { onDismiss() }
+        .onAppear {
+            animateIn = true
+            withAnimation(.easeOut(duration: 0.5)) {
+                shakeAmount = 1
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var bossContent: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "flame.fill")
+                .font(.system(size: 40, weight: .bold))
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 1, green: 0.92, blue: 0.45),
+                            Color(red: 0.95, green: 0.55, blue: 0.12)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .shadow(color: Color.orange.opacity(0.75), radius: 12)
+                .padding(.top, 26)
+
+            Text("BOSS DEFEATED")
+                .font(.system(size: 26, weight: .black, design: .rounded))
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 1, green: 0.9, blue: 0.45),
+                            Color(red: 1, green: 0.72, blue: 0.2)
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .multilineTextAlignment(.center)
+
+            Text("+3 STAT POINTS ACQUIRED")
+                .font(.system(size: 15, weight: .heavy, design: .rounded))
+                .foregroundStyle(Color(red: 1, green: 0.88, blue: 0.5))
+                .tracking(0.8)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 12)
+
+            VStack(spacing: 6) {
+                Text("\(WeightDisplay.formatted(weight, unit: weightUnit)) × \(reps) · \(exerciseName)")
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.92))
+                    .multilineTextAlignment(.center)
+
+                Text(previousPRSubtitle)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.55))
+            }
+            .padding(.top, 4)
+
+            Button {
+                onDismiss()
+            } label: {
+                Text("Claim reward")
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color(red: 0.15, green: 0.05, blue: 0.02))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color(red: 1, green: 0.88, blue: 0.42),
+                                        Color(red: 0.92, green: 0.62, blue: 0.18)
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                    )
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 22)
+            .padding(.top, 8)
+            .padding(.bottom, 26)
+        }
+    }
+
+    private var previousPRSubtitle: String {
+        guard let previousPR, previousPR > 0 else {
+            return "New all-time record logged"
+        }
+        return "Previous best: \(WeightDisplay.formatted(previousPR, unit: weightUnit))"
+    }
 }
 
 private struct PRCelebrationOverlay: View {
@@ -1335,11 +1689,16 @@ private struct SparkleField: View {
         WorkoutDay.self,
         Exercise.self,
         SetLog.self,
+        CompletedWorkoutSession.self,
+        CompletedExerciseSnapshot.self,
+        CompletedSetSnapshot.self,
         PersonalRecord.self,
+        PlayerStats.self,
         configurations: config
     )
     let context = ModelContext(container)
     WorkoutProgramSeed.insertDefaultProgramIfNeeded(in: context)
+    PlayerStats.ensureExists(in: context)
     let program = try! context.fetch(FetchDescriptor<WorkoutProgram>()).first!
     let day1 = program.days.first { $0.dayIndex == 1 }!
 
